@@ -14,7 +14,7 @@ def test_end_to_end(tmp_path, extract_dir, capsys):
     # it joins at 90% by design. Lower the floor so this exercises the
     # all-checks-pass path that the real 99.999% extract takes.
     code = vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
     )
     assert code == 0
 
@@ -57,7 +57,7 @@ def test_outputs_default_to_the_source_folder(extract_dir):
     Every other CLI test passes --out, so nothing exercised the default. The
     extract_dir fixture lives under tmp_path, so this writes there.
     """
-    assert vrdb_export.main([str(extract_dir), "--join-floor", "0.5"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--parquet", "--join-floor", "0.5"]) == 0
     for name in (
         "vrdb_20260803.sqlite",
         "voters_20260803.parquet",
@@ -68,24 +68,44 @@ def test_outputs_default_to_the_source_folder(extract_dir):
         assert not (Path.cwd() / name).exists(), f"{name} landed in the repo"
 
 
-def test_sqlite_only(tmp_path, extract_dir):
+def test_default_writes_sqlite_only(tmp_path, extract_dir):
+    """Parquet is opt-in. Most runs want the database and nothing else.
+
+    The fixture joins at 90% by design, so an all-pass run needs the floor
+    lowered. Without asserting the code, this returned 1 unnoticed.
+    """
     out = tmp_path / "out"
     out.mkdir()
-    # The fixture joins at 90% by design, so an all-pass run needs the floor
-    # lowered. Without asserting the code, this returned 1 unnoticed.
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--sqlite", "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
     ) == 0
     assert (out / "vrdb_20260803.sqlite").exists()
     assert not list(out.glob("*.parquet"))
 
 
-def test_parquet_only(tmp_path, extract_dir):
+def test_parquet_adds_to_the_database_rather_than_replacing_it(tmp_path, extract_dir):
     out = tmp_path / "out"
     out.mkdir()
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet"]) == 0
+    assert vrdb_export.main(
+        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
+    ) == 0
+    assert (out / "vrdb_20260803.sqlite").exists()
+    assert len(list(out.glob("*.parquet"))) == 3
+
+
+def test_parquet_only_skips_the_database(tmp_path, extract_dir):
+    out = tmp_path / "out"
+    out.mkdir()
+    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet-only"]) == 0
     assert not (out / "vrdb_20260803.sqlite").exists()
     assert (out / "voters_20260803.parquet").exists()
+
+
+def test_the_sqlite_flag_is_gone(tmp_path, extract_dir):
+    """It would now mean the same as passing nothing, so it is not accepted."""
+    with pytest.raises(SystemExit) as excinfo:
+        vrdb_export.main([str(extract_dir), "--out", str(tmp_path), "--sqlite"])
+    assert excinfo.value.code == 2
 
 
 def test_sqlite_and_parquet_hold_the_same_rows(tmp_path, extract_dir):
@@ -93,7 +113,7 @@ def test_sqlite_and_parquet_hold_the_same_rows(tmp_path, extract_dir):
     out = tmp_path / "out"
     out.mkdir()
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
     ) == 0
     conn = sqlite3.connect(out / "vrdb_20260803.sqlite")
 
@@ -124,7 +144,7 @@ def test_parquet_row_count_is_verified_against_sqlite(tmp_path, extract_dir, cap
     out = tmp_path / "out"
     out.mkdir()
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
     ) == 0
     captured = capsys.readouterr().out
     assert "PASS  voters: parquet matches sqlite: sqlite 10 vs parquet 10" in captured
@@ -135,7 +155,7 @@ def test_parquet_only_reports_that_no_checks_ran(tmp_path, extract_dir, capsys):
     """Verification needs the database, so --parquet alone runs zero checks."""
     out = tmp_path / "out"
     out.mkdir()
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet-only"]) == 0
     captured = capsys.readouterr().out
     assert "NO CHECKS RUN" in captured
     assert "ALL CHECKS PASSED" not in captured
@@ -333,7 +353,7 @@ def test_leaves_alone_outputs_for_tables_it_is_not_writing(tmp_path, extract_dir
     stale.write_bytes(b"from an earlier complete run")
     (extract_dir / "2026-08-03_Districts-Precincts.xlsx").unlink()
 
-    assert vrdb_export.main([str(extract_dir), "--out", str(out)]) == 0
+    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet"]) == 0
     assert stale.read_bytes() == b"from an earlier complete run"
 
 
@@ -344,7 +364,7 @@ def test_force_does_not_delete_an_untouched_table_output(tmp_path, extract_dir):
     stale.write_bytes(b"from an earlier complete run")
     (extract_dir / "2026-08-03_Districts-Precincts.xlsx").unlink()
 
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--force"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--force", "--parquet"]) == 0
     assert stale.read_bytes() == b"from an earlier complete run"
 
 

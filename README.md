@@ -1,5 +1,5 @@
 # pipe2csv-progress
-Two tools for working with Washington voter registry (VRDB) extracts. `to_csv_progress.py` converts a large, pipe-delimited export that uses `<br>` for line breaks into standard RFC 4180 CSV, fast, with accurate progress, ETA, and proper quoting for commas inside fields. `vrdb_export.py` loads a full monthly extract into a typed, indexed SQLite database and a set of Parquet files - see [below](#vrdb_exportpy---load-an-extract-into-sqlite-and-parquet).
+Two tools for working with Washington voter registry (VRDB) extracts. `to_csv_progress.py` converts a large, pipe-delimited export that uses `<br>` for line breaks into standard RFC 4180 CSV, fast, with accurate progress, ETA, and proper quoting for commas inside fields. `vrdb_export.py` loads a full monthly extract into a typed, indexed SQLite database, and optionally a set of Parquet files - see [below](#vrdb_exportpy---load-an-extract-into-sqlite).
 
 - Streams input in a single pass
 - Handles Windows-1252 (smart quotes) by default
@@ -61,10 +61,10 @@ options:
 
 `tail -1 voters.csv`
 
-## vrdb_export.py - load an extract into SQLite and Parquet
+## vrdb_export.py - load an extract into SQLite
 
-Builds a typed, indexed SQLite database and a set of Parquet files from a
-monthly Washington VRDB extract.
+Builds a typed, indexed SQLite database from a monthly Washington VRDB
+extract, and optionally a set of Parquet files beside it.
 
 ### Setup
 
@@ -108,8 +108,9 @@ pattern, or a header whose columns have been renamed or reordered, the run
 stops with a message naming the problem instead of loading a guess.
 
 Outputs are named from the extract date and land in the source folder by
-default: `vrdb_20260803.sqlite`, `voters_20260803.parquet`,
-`voting_history_20260803.parquet`, `districts_precincts_20260803.parquet`.
+default. A plain run writes one file, `vrdb_20260803.sqlite`. With `--parquet`
+you also get `voters_20260803.parquet`, `voting_history_20260803.parquet` and
+`districts_precincts_20260803.parquet`.
 Re-running is idempotent; it refuses to overwrite an existing output unless
 you pass `--force`, and if a run fails partway it deletes whatever partial
 outputs it had already started writing.
@@ -119,8 +120,8 @@ Options:
 | Option | Effect |
 |---|---|
 | `--out DIR` | Output directory (default: the source folder) |
-| `--sqlite` | Write only SQLite |
-| `--parquet` | Write only Parquet |
+| `--parquet` | Also write the Parquet files beside the database |
+| `--parquet-only` | Write Parquet without the database. Verification needs the database, so this mode runs no checks at all. |
 | `--force` | Overwrite existing outputs |
 | `--skip-verify` | Skip the post-load verification pass |
 | `--encoding ENCODING` | Source encoding (default: `cp1252`) |
@@ -132,10 +133,11 @@ Options:
 
 Unless you pass `--skip-verify`, the run re-checks its own output and exits 1
 if anything fails. Per table it checks that no row was skipped as malformed,
-that the row count is right, that the primary key is unique, that the Parquet
-file holds as many rows as SQLite, and - for the two pipe-delimited tables -
-that 200 rows re-read at random offsets from the source match the database
-field for field. It finishes by reporting what share of voters join to a
+that the row count is right, that the primary key is unique, and - for the two
+pipe-delimited tables - that 200 rows re-read at random offsets from the source
+match the database field for field. When `--parquet` is in play it also checks
+that each Parquet file holds as many rows as SQLite, since nothing else looks
+at the Parquet output. It finishes by reporting what share of voters join to a
 district row.
 
 Two of those deserve spelling out, because the obvious implementation of each
@@ -158,7 +160,7 @@ is a check that cannot fail:
 
 Measured on the real 2026-08 extract, on an M-series Mac:
 
-- Full run (SQLite + Parquet, all three files): 91 seconds.
+- Full run with `--parquet` (all three files, both output formats): 91 seconds.
 - Row counts: `voters` 5,573,822; `voting_history` 5,234,497;
   `districts_precincts` 231,537.
 - Output sizes: SQLite 1,959.2 MB; `voters_20260803.parquet` 149.9 MB;
@@ -167,6 +169,11 @@ Measured on the real 2026-08 extract, on an M-series Mac:
 - The 773.3 MB source text becomes a 149.9 MB Parquet file, about 5.2x smaller.
 - Verification: 0 malformed rows, 0 coercion warnings, districts join coverage
   99.9986% (5,573,743 of 5,573,822 voters).
+
+Skipping Parquet is worth roughly 11%. The 2026-04 extract, same machine, same
+5.5M voters: 83.2 seconds by default against 93.8 seconds with `--parquet`.
+Most of that is in the voters pass, which reads at 161k rows/s writing SQLite
+alone and 123k rows/s feeding both writers from the shared read.
 
 The pipe-delimited reader (`vrdb/reader.py`) holds constant memory regardless
 of file size - measured flat at 37.959 MB peak from 300k through 1.2M rows

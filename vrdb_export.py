@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Load a Washington VRDB extract into SQLite and Parquet.
+"""Load a Washington VRDB extract into SQLite, and optionally Parquet.
 
     python vrdb_export.py /path/to/08.2026.WA
 
-Run with no arguments to be prompted for the folder.
+Run with no arguments to be prompted for the folder. The database alone is the
+default; pass --parquet to write the Parquet files beside it.
 
 The outputs contain regulated voter data (RCW 29A.08.720 and 29A.08.740). They
 default to the source folder and must never be committed to version control.
@@ -25,8 +26,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("folder", nargs="?", help="Folder holding the extract files")
     parser.add_argument("--out", help="Output directory (default: the source folder)")
-    parser.add_argument("--sqlite", action="store_true", help="Write only SQLite")
-    parser.add_argument("--parquet", action="store_true", help="Write only Parquet")
+    parser.add_argument(
+        "--parquet",
+        action="store_true",
+        help="Also write Parquet files beside the database",
+    )
+    parser.add_argument(
+        "--parquet-only",
+        action="store_true",
+        help=(
+            "Write Parquet without the database. Verification needs the "
+            "database, so this mode runs no checks at all."
+        ),
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite existing outputs")
     parser.add_argument("--skip-verify", action="store_true")
     parser.add_argument("--encoding", default="cp1252", help="Source encoding")
@@ -98,8 +110,10 @@ def main(argv=None) -> int:
         print(error, file=sys.stderr)
         return 2
 
-    want_sqlite = args.sqlite or not args.parquet
-    want_parquet = args.parquet or not args.sqlite
+    # SQLite is the point of the tool and the only output verification can
+    # check. Parquet is the opt-in extra.
+    want_sqlite = not args.parquet_only
+    want_parquet = args.parquet or args.parquet_only
     out_dir = Path(args.out).expanduser() if args.out else found.vrdb.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
