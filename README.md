@@ -95,11 +95,17 @@ unguarded `table.primary_key` dereference in `verify.py`.
 ```
 
 It finds the three files by pattern (`*VRDB_Extract.txt`,
-`*Voting_History*.txt`, `*Districts-Precincts.xlsx`), preferring the `.txt`
-source over a previously converted `.csv`. Run it with no arguments to be
-prompted for the folder. Only the VRDB file is required; a missing history or
-districts file is a warning, and the table it would have populated is simply
-skipped.
+`*Voting_History*.txt`, `*Districts-Precincts.xlsx`). Run it with no arguments
+to be prompted for the folder. Only the VRDB file is required; a missing
+history or districts file is a warning, and the table it would have populated
+is simply skipped.
+
+It reads the original pipe-delimited export and nothing else. A `.csv` you
+converted earlier - with `to_csv_progress.py`, say - is comma-delimited, and
+the reader splits on `|` only, so such a file is deliberately not discovered
+rather than found and then rejected. If a folder holds two files matching one
+pattern, or a header whose columns have been renamed or reordered, the run
+stops with a message naming the problem instead of loading a guess.
 
 Outputs are named from the extract date and land in the source folder by
 default: `vrdb_20260803.sqlite`, `voters_20260803.parquet`,
@@ -139,9 +145,9 @@ is a check that cannot fail:
   tally of rows it accepted. Given that tally, the check compares the loader to
   itself: a load that stopped early leaves a database holding exactly the rows
   the reader counted, so both sides agree no matter how much of the file went
-  unread. Re-counting costs 1.1s on the 765 MB voters file and 0.4s on voting
-  history. The workbook has no equivalent cheap re-count, so
-  `districts_precincts` is still counted against the loader's tally.
+  unread. Re-counting costs 1.1s on the 765 MB voters file, 0.4s on voting
+  history and 2.4s to parse the workbook a second time - about 4 seconds on a
+  94-second run.
 - **Malformed rows fail the run**, rather than only printing a warning. A row
   the reader skipped for a wrong field count is invisible to every other check,
   since it never reaches the accepted-row tally in the first place. For the

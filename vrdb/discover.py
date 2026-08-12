@@ -62,11 +62,17 @@ def _only(folder: Path, pattern: str) -> Path | None:
 
 def discover(folder) -> ExtractFiles:
     folder = Path(folder)
-    # Prefer the .txt: it is the original CP1252 source. A sibling .csv is a
-    # previously converted derivative.
-    vrdb = _only(folder, "*VRDB_Extract.txt") or _only(folder, "*VRDB_Extract.csv")
+    # The .txt only. A sibling .csv is a previously converted derivative, and
+    # conversion is exactly what makes it unreadable here: reader.iter_batches
+    # splits on "|" and nothing else, so a comma-delimited file - which is what
+    # a .csv almost always is - fails on its own header. Discovering one meant
+    # finding a file the loader would then refuse.
+    vrdb = _only(folder, "*VRDB_Extract.txt")
     if vrdb is None:
-        raise MissingExtract(f"no *VRDB_Extract.txt or .csv found in {folder}")
+        raise MissingExtract(
+            f"no *VRDB_Extract.txt found in {folder}. A converted .csv cannot "
+            "be loaded; this reads the original pipe-delimited export."
+        )
     return ExtractFiles(
         vrdb=vrdb,
         voting_history=_only(folder, "*Voting_History*.txt"),

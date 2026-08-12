@@ -201,16 +201,13 @@ def main(argv=None) -> int:
                 # Before the row count, which reports skipped rows as expected
                 # rather than as a shortfall.
                 results.append(verify.check_no_malformed_rows(table, table_stats))
+                # Counted by re-reading the source, not taken from the loader's
+                # own tally, so a load that stopped early cannot satisfy it.
+                # Measured at 1.1s for the 765 MB voters file, 0.4s for voting
+                # history and 2.4s for the workbook's second parse.
                 if table is schema.DISTRICTS_PRECINCTS:
-                    # No cheap independent count for a workbook: the only way to
-                    # total its rows is to parse the sheet a second time. This
-                    # one still compares the loader to itself.
-                    source_rows = table_stats.rows + table_stats.malformed
+                    source_rows = verify.count_workbook_rows(path)
                 else:
-                    # Counted by re-reading the file, not taken from the
-                    # loader's own tally, so a load that stopped early cannot
-                    # satisfy it. Measured at 1.1s for the 765 MB voters file
-                    # and 0.4s for voting history.
                     source_rows = verify.count_source_rows(path, encoding=args.encoding)
                 results.append(
                     verify.check_row_count(
@@ -242,6 +239,12 @@ def main(argv=None) -> int:
         for path in paths.values():
             path.unlink(missing_ok=True)
         print("\nRun failed; partial outputs deleted.", file=sys.stderr)
+        if isinstance(error, reader.HeaderMismatch):
+            # The loader refusing to guess at renamed or reordered columns is
+            # an expected outcome, not a crash. Its message already names the
+            # file and both column lists.
+            print(error, file=sys.stderr)
+            return 1
         if isinstance(error, UnicodeDecodeError):
             print(
                 f"Could not decode byte at offset {error.start} as "

@@ -26,6 +26,11 @@ def test_count_source_rows_excludes_header(vrdb_txt):
     assert verify.count_source_rows(vrdb_txt) == 10
 
 
+def test_count_workbook_rows_excludes_header(districts_xlsx):
+    """The workbook needs its own counter; count_source_rows splits on "|"."""
+    assert verify.count_workbook_rows(districts_xlsx) == 10
+
+
 def test_row_count_passes(tmp_path, vrdb_txt):
     conn = _loaded(tmp_path, vrdb_txt)
     assert verify.check_row_count(conn, schema.VOTERS, 10).passed

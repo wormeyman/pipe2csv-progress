@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
-from vrdb import reader, schema
+from vrdb import districts, reader, schema
 
 # Voters below this join rate mean the PrecinctPart format changed and district
 # filtering is silently broken. The 2026-08 extract measures 99.999%.
@@ -30,6 +30,21 @@ def count_source_rows(path, encoding: str = "cp1252") -> int:
     for _ in reader._logical_lines(Path(path), encoding):
         total += 1
     return max(total, 0)
+
+
+def count_workbook_rows(path) -> int:
+    """Count the workbook's data rows by parsing the sheet a second time.
+
+    The workbook needs its own counter because count_source_rows splits text on
+    "|". Rows skipped for holding content past the last column are added back:
+    like a malformed text line, they are in the source and cannot be in the
+    database, and check_no_malformed_rows is what fails on them.
+    """
+    stats = reader.ReadStats()
+    total = -1  # the header row
+    for _ in districts.iter_rows(path, stats=stats):
+        total += 1
+    return max(total + stats.malformed, 0)
 
 
 def check_row_count(conn, table: schema.Table, expected: int, *,

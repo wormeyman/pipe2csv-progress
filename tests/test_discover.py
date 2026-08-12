@@ -22,9 +22,22 @@ def test_discovers_all_three(extract_dir):
     assert found.extract_date == "20260803"
 
 
-def test_prefers_txt_over_a_sibling_csv(extract_dir):
+def test_a_sibling_csv_never_wins(extract_dir):
     (extract_dir / "20260803_VRDB_Extract.csv").write_text("x")
     assert discover.discover(extract_dir).vrdb.suffix == ".txt"
+
+
+def test_a_converted_csv_is_not_discovered(tmp_path):
+    """A .csv is the one thing the reader cannot read: it splits on "|" only.
+
+    Discovery used to fall back to *VRDB_Extract.csv when no .txt was present.
+    That found a file iter_batches then rejected with HeaderMismatch, which
+    main() did not catch, so the run ended in a traceback. A real folder like
+    this holds a comma-delimited derivative of a source file that is now gone.
+    """
+    (tmp_path / "20250701_VRDB_Extract.csv").write_text("x")
+    with pytest.raises(discover.MissingExtract, match=r"VRDB_Extract\.txt"):
+        discover.discover(tmp_path)
 
 
 def test_optional_files_may_be_absent(extract_dir):

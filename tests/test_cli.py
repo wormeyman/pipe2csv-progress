@@ -276,6 +276,51 @@ def test_row_count_catches_a_load_that_stopped_early(
     assert "SOME CHECKS FAILED" in captured
 
 
+def test_districts_row_count_catches_a_load_that_stopped_early(
+    tmp_path, extract_dir, capsys, monkeypatch
+):
+    """The workbook is counted by a second parse, not by the loader's tally.
+
+    The join floor is set low enough here that coverage still passes, so the
+    row count is the only thing standing between a half-loaded districts table
+    and a clean bill of health.
+    """
+    real = vrdb_export.districts.iter_batches
+
+    def stops_after_one_batch(path, table, **kwargs):
+        for batch in real(path, table, **kwargs):
+            yield batch
+            return
+
+    monkeypatch.setattr(vrdb_export.districts, "iter_batches", stops_after_one_batch)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert vrdb_export.main(
+        [str(extract_dir), "--out", str(out), "--batch", "4", "--join-floor", "0.2"]
+    ) == 1
+    captured = capsys.readouterr().out
+    assert "FAIL  districts_precincts: row count: source 10 vs database 4" in captured
+    assert "PASS  districts join coverage" in captured
+
+
+def test_a_changed_source_header_is_a_message_not_a_traceback(
+    tmp_path, extract_dir, capsys
+):
+    """The SOS renaming a column must not end the run in a stack trace.
+
+    HeaderMismatch is the loader refusing to guess, which is correct, but it
+    was the one expected failure that reached the user as a traceback.
+    """
+    target = extract_dir / "20260803_VRDB_Extract.txt"
+    target.write_bytes(target.read_bytes().replace(b"Birthyear", b"YearofBirth", 1))
+    out = tmp_path / "out"
+    out.mkdir()
+    assert vrdb_export.main([str(extract_dir), "--out", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert "YearofBirth" in err
+    assert not (out / "vrdb_20260803.sqlite").exists()
+
+
 def test_leaves_alone_outputs_for_tables_it_is_not_writing(tmp_path, extract_dir):
     """A missing optional source must not endanger that table's earlier output.
 
