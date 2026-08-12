@@ -198,11 +198,25 @@ def main(argv=None) -> int:
             print("\n--- Verification ---")
             for table, path in sources:
                 table_stats = all_stats[table.name]
-                # Before the row count, because the row count compares the
-                # database to stats.rows, which already excludes anything this
-                # check would flag.
+                # Before the row count, which reports skipped rows as expected
+                # rather than as a shortfall.
                 results.append(verify.check_no_malformed_rows(table, table_stats))
-                results.append(verify.check_row_count(conn, table, table_stats.rows))
+                if table is schema.DISTRICTS_PRECINCTS:
+                    # No cheap independent count for a workbook: the only way to
+                    # total its rows is to parse the sheet a second time. This
+                    # one still compares the loader to itself.
+                    source_rows = table_stats.rows + table_stats.malformed
+                else:
+                    # Counted by re-reading the file, not taken from the
+                    # loader's own tally, so a load that stopped early cannot
+                    # satisfy it. Measured at 1.1s for the 765 MB voters file
+                    # and 0.4s for voting history.
+                    source_rows = verify.count_source_rows(path, encoding=args.encoding)
+                results.append(
+                    verify.check_row_count(
+                        conn, table, source_rows, skipped=table_stats.malformed
+                    )
+                )
                 results.append(verify.check_primary_key_unique(conn, table))
                 if table.name in sqlite_rows:
                     results.append(

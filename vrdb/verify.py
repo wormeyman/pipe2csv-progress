@@ -32,12 +32,27 @@ def count_source_rows(path, encoding: str = "cp1252") -> int:
     return max(total, 0)
 
 
-def check_row_count(conn, table: schema.Table, expected: int) -> CheckResult:
+def check_row_count(conn, table: schema.Table, expected: int, *,
+                    skipped: int = 0) -> CheckResult:
+    """Compare the database against a count taken from the source itself.
+
+    `expected` must come from re-reading the source, not from the loader's own
+    tally of the rows it accepted. Given that tally this check compares the
+    loader to itself: a load that stopped early leaves a database holding
+    exactly the rows the reader counted, so both sides agree and nothing fails.
+
+    `skipped` is the malformed-row count. Those rows are in the source total
+    and cannot be in the database, so they are not a shortfall here;
+    check_no_malformed_rows is what fails on them.
+    """
     actual = conn.execute(f'SELECT COUNT(*) FROM "{table.name}"').fetchone()[0]
+    detail = f"source {expected:,} vs database {actual:,}"
+    if skipped:
+        detail = f"{detail} plus {skipped:,} skipped"
     return CheckResult(
         f"{table.name}: row count",
-        actual == expected,
-        f"source {expected:,} vs database {actual:,}",
+        actual + skipped == expected,
+        detail,
     )
 
 

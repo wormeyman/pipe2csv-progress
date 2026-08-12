@@ -11,6 +11,10 @@ data rows: 3,592 row numbers have no element at all, and 2,249 of the elements
 that do exist are entirely empty. Trusting `dimension`, or emitting one row per
 <row> element, invents phantom all-null district rows. So: never read the
 declared dimension, and skip rows where every cell is empty.
+
+Empty is not the same as absent. A row holding content past the last expected
+column is a shape change, not a blank, and is counted as malformed so
+verification fails rather than loading its first eight columns in silence.
 """
 
 import re
@@ -45,8 +49,15 @@ def _shared_strings(archive: zipfile.ZipFile) -> list[str]:
     return ["".join(t.text or "" for t in si.iter(_NS + "t")) for si in root]
 
 
-def iter_rows(path, width: int = 8):
+def iter_rows(path, width: int = 8, stats: reader.ReadStats | None = None):
     """Yield each non-empty sheet row as a list of `width` strings.
+
+    A row carrying content in a column past `width` is counted in `stats` and
+    skipped, the same way reader.iter_batches treats a line with the wrong
+    field count. That only happens if the workbook's shape changed, and loading
+    its first eight columns as though nothing had is how a layout change turns
+    into silently wrong data. An empty cell out there is not content and does
+    not count.
 
     `element` and `cell` are annotated because typeshed types ET.iterparse as
     Iterator[tuple[str, Any]]. Without the annotation the whole body below is
@@ -54,14 +65,19 @@ def iter_rows(path, width: int = 8):
     """
     path = Path(path)
     element: ET.Element
+    position = 0
     with zipfile.ZipFile(path) as archive:
         strings = _shared_strings(archive)
         with archive.open("xl/worksheets/sheet1.xml") as sheet:
             for _, element in ET.iterparse(sheet, events=("end",)):
                 if element.tag != _NS + "row":
                     continue
+                position += 1
                 cells = [""] * width
                 index = -1
+                # Widest populated column beyond `width`, as a 1-based count so
+                # it reads like the field count reader.py records.
+                overflow = 0
                 cell: ET.Element
                 for cell in element.iter(_NS + "c"):
                     ref = cell.get("r")
@@ -70,8 +86,6 @@ def iter_rows(path, width: int = 8):
                     # used to raise TypeError from inside _column_index rather
                     # than the diagnosable ValueError.
                     index = _column_index(ref) if ref is not None else index + 1
-                    if index >= width:
-                        continue
                     kind = cell.get("t")
                     if kind == "inlineStr":
                         value = "".join(t.text or "" for t in cell.iter(_NS + "t"))
@@ -83,8 +97,23 @@ def iter_rows(path, width: int = 8):
                             value = strings[int(node.text)]
                         else:
                             value = node.text
+                    if index >= width:
+                        if value:
+                            overflow = max(overflow, index + 1)
+                        continue
                     cells[index] = value
+                # Read before clear(): Element.clear() drops the attributes too.
+                # The real workbook skips row numbers, so r= is the row the
+                # operator would find in Excel and a running count is not.
+                row_ref = element.get("r")
+                row_number = int(row_ref) if row_ref and row_ref.isdigit() else position
                 element.clear()
+                if overflow:
+                    if stats is not None:
+                        stats.malformed += 1
+                        if len(stats.malformed_examples) < 10:
+                            stats.malformed_examples.append((row_number, overflow))
+                    continue
                 if any(cells):
                     yield cells
 
@@ -103,7 +132,7 @@ def iter_batches(
     names = list(table.column_names)
     width = len(kinds)
 
-    rows = iter_rows(path, width=width)
+    rows = iter_rows(path, width=width, stats=stats)
     first = next(rows, None)
     if first is None:
         return

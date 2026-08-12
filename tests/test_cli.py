@@ -223,11 +223,7 @@ def test_default_join_floor_still_fails_the_90_percent_fixture(tmp_path, extract
 
 
 def test_malformed_rows_fail_verification(tmp_path, extract_dir, capsys):
-    """A skipped row must fail the run, not just print a warning.
-
-    The row count compares the database to the reader's own accepted-row tally,
-    which already excludes malformed rows, so it can never catch this.
-    """
+    """A skipped row must fail the run, not just print a warning."""
     target = extract_dir / "20260803_VRDB_Extract.txt"
     target.write_bytes(
         target.read_bytes() + "9000011|SHORT|ROW\r\n9000012|ALSO|SHORT\r\n".encode("cp1252")
@@ -240,8 +236,43 @@ def test_malformed_rows_fail_verification(tmp_path, extract_dir, capsys):
     captured = capsys.readouterr().out
     assert "FAIL  voters: no malformed rows" in captured
     assert "2 row(s) skipped" in captured
-    # The circular check still agrees with itself, which is the whole point.
+    # The row count still passes: the source holds 12 rows, the database holds
+    # 10, and the 2 skipped rows account for the difference exactly.
     assert "PASS  voters: row count" in captured
+    assert "SOME CHECKS FAILED" in captured
+
+
+def test_row_count_catches_a_load_that_stopped_early(
+    tmp_path, extract_dir, capsys, monkeypatch
+):
+    """The row count is checked against an independent re-read of the source.
+
+    Fed the reader's own accepted-row tally instead, this check reported
+    "source 4 vs database 4" and passed: the database holds every row the
+    reader counted, and the reader counted only the rows it got to, so both
+    sides agree no matter how much of the file went unread.
+
+    The sample check does catch a truncation this severe, and on this 10-row
+    fixture it catches every truncation, because the sampler reads a small file
+    whole. At real scale it is 200 random rows out of 5.5M, so a load that lost
+    the last few thousand rows would slip past it around 96 times in 100. The
+    row count is the check that cannot miss it.
+    """
+    real = vrdb_export.reader.iter_batches
+
+    def stops_after_one_batch(path, table, **kwargs):
+        for batch in real(path, table, **kwargs):
+            yield batch
+            return
+
+    monkeypatch.setattr(vrdb_export.reader, "iter_batches", stops_after_one_batch)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert vrdb_export.main(
+        [str(extract_dir), "--out", str(out), "--batch", "4", "--join-floor", "0.5"]
+    ) == 1
+    captured = capsys.readouterr().out
+    assert "FAIL  voters: row count: source 10 vs database 4" in captured
     assert "SOME CHECKS FAILED" in captured
 
 

@@ -122,6 +122,32 @@ Options:
 | `--batch BATCH` | Rows per batch (default: 50000) |
 | `--join-floor JOIN_FLOOR` | Minimum share of voters that must join to a district row before the check fails (default 0.95). The 2026-08 extract measures 0.999986. Lower it only to investigate an extract whose `PrecinctPart` format changed. |
 
+### Verification
+
+Unless you pass `--skip-verify`, the run re-checks its own output and exits 1
+if anything fails. Per table it checks that no row was skipped as malformed,
+that the row count is right, that the primary key is unique, that the Parquet
+file holds as many rows as SQLite, and - for the two pipe-delimited tables -
+that 200 rows re-read at random offsets from the source match the database
+field for field. It finishes by reporting what share of voters join to a
+district row.
+
+Two of those deserve spelling out, because the obvious implementation of each
+is a check that cannot fail:
+
+- **The row count comes from re-reading the source**, not from the loader's own
+  tally of rows it accepted. Given that tally, the check compares the loader to
+  itself: a load that stopped early leaves a database holding exactly the rows
+  the reader counted, so both sides agree no matter how much of the file went
+  unread. Re-counting costs 1.1s on the 765 MB voters file and 0.4s on voting
+  history. The workbook has no equivalent cheap re-count, so
+  `districts_precincts` is still counted against the loader's tally.
+- **Malformed rows fail the run**, rather than only printing a warning. A row
+  the reader skipped for a wrong field count is invisible to every other check,
+  since it never reaches the accepted-row tally in the first place. For the
+  workbook, "malformed" means a row with content in a column past `PrecinctPart`
+  - a shape change that would otherwise load its first eight columns in silence.
+
 ### Performance
 
 Measured on the real 2026-08 extract, on an M-series Mac:

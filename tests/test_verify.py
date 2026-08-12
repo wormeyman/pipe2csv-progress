@@ -40,6 +40,23 @@ def test_row_count_fails_when_rows_are_missing(tmp_path, vrdb_txt):
     assert "9" in result.detail
 
 
+def test_row_count_accounts_for_rows_skipped_as_malformed(tmp_path, vrdb_txt):
+    """The source count is taken from the source, so it includes skipped rows.
+
+    Only rows the reader accepted reach the database, so the two sides differ
+    by exactly the malformed count and that difference is not a failure.
+    """
+    conn = _loaded(tmp_path, vrdb_txt)
+    assert verify.check_row_count(conn, schema.VOTERS, 12, skipped=2).passed
+
+
+def test_row_count_fails_when_skipped_rows_do_not_explain_the_gap(tmp_path, vrdb_txt):
+    conn = _loaded(tmp_path, vrdb_txt)
+    result = verify.check_row_count(conn, schema.VOTERS, 12, skipped=1)
+    assert not result.passed
+    assert "source 12" in result.detail
+
+
 def test_primary_key_uniqueness(tmp_path, vrdb_txt):
     conn = _loaded(tmp_path, vrdb_txt)
     assert verify.check_primary_key_unique(conn, schema.VOTERS).passed

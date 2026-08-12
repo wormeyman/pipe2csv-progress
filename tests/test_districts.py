@@ -76,6 +76,55 @@ def test_iter_batches_yields_coerced_rows(districts_xlsx):
     assert rows[0][0] == "AD"
 
 
+def test_content_past_the_last_column_is_counted_and_skipped(tmp_path):
+    """A ninth populated column means the workbook layout changed.
+
+    `if index >= width: continue` used to discard that cell in silence, and
+    stats.malformed was never incremented by this reader at all, so
+    check_no_malformed_rows reported a PASS that could not fail.
+    """
+    wide = list(DISTRICT_ROWS[0]) + ["SURPRISE"]
+    path = build_xlsx(
+        tmp_path / "wide.xlsx", DISTRICT_HEADER, [wide] + DISTRICT_ROWS[1:]
+    )
+    stats = reader.ReadStats()
+    rows = [
+        r
+        for b in districts.iter_batches(
+            path, schema.DISTRICTS_PRECINCTS, stats=stats
+        )
+        for r in b
+    ]
+    assert stats.malformed == 1
+    assert stats.malformed_examples == [(2, 9)]  # sheet row 2, 9 populated columns
+    assert stats.rows == 9
+    assert len(rows) == 9
+
+
+def test_an_empty_cell_past_the_last_column_is_not_malformed(tmp_path):
+    """Only content counts. A trailing empty cell is not a layout change."""
+    padded = list(DISTRICT_ROWS[0]) + [""]
+    path = build_xlsx(tmp_path / "padded.xlsx", DISTRICT_HEADER, [padded])
+    stats = reader.ReadStats()
+    rows = [
+        r
+        for b in districts.iter_batches(
+            path, schema.DISTRICTS_PRECINCTS, stats=stats
+        )
+        for r in b
+    ]
+    assert stats.malformed == 0
+    assert len(rows) == 1
+
+
+def test_all_empty_rows_are_skipped_without_counting_as_malformed(districts_xlsx):
+    """The real workbook holds 2,249 of these by design."""
+    stats = reader.ReadStats()
+    list(districts.iter_batches(districts_xlsx, schema.DISTRICTS_PRECINCTS, stats=stats))
+    assert stats.malformed == 0
+    assert stats.rows == 10
+
+
 def test_every_precinctpart_format_survives_unmodified(districts_xlsx):
     rows = [
         r
