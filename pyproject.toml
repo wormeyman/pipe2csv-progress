@@ -1,0 +1,20 @@
+[project]
+name = "vrdb-export"
+version = "0.1.0"
+description = "Load Washington VRDB extracts into SQLite and Parquet"
+requires-python = ">=3.12"
+dependencies = ["pyarrow==25.0.1"]
+
+[project.optional-dependencies]
+notebook = ["pandas==3.0.5", "jupyterlab==4.6.3", "matplotlib==3.11.1"]
+dev = ["pytest>=8", "pyright>=1.1.411", "nbstripout>=0.9.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vrdb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
