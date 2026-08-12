@@ -1,0 +1,9 @@
+{
+  "include": ["vrdb", "tests", "vrdb_export.py", "to_csv_progress.py"],
+  "typeCheckingMode": "standard",
+  "reportUnusedImport": "error",
+  "pythonVersion": "3.14",
+  "pythonPlatform": "Darwin",
+  "venvPath": ".",
+  "venv": ".venv"
+}

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# Refuse any commit that would store executed notebook cells.
+#
+# notebooks/vrdb_explore.ipynb queries regulated voter data (RCW 29A.08.720 and
+# RCW 29A.08.740) and this repository is public. A notebook's rendered output is
+# stored inside the .ipynb file, so a single executed cell publishes real voter
+# records even though the code that produced it looks harmless. .gitignore
+# cannot help: the notebook itself is tracked on purpose.
+#
+# The nbstripout clean filter wired up by scripts/install-hooks.sh is the first
+# line of defense. This hook is the second, and it inspects the STAGED blob -
+# what would actually be committed - so it still fires on a clone where the
+# filter was never installed.
+#
+# Hooks are not tracked by git. Install with: bash scripts/install-hooks.sh
+
+set -eo pipefail
+
+root=$(git rev-parse --show-toplevel)
+python="$root/.venv/bin/python"
+
+if [ ! -x "$python" ]; then
+    echo "pre-commit: no interpreter at $python" >&2
+    echo "pre-commit: create it first, then retry:" >&2
+    echo "    uv venv --python 3.14 && uv pip install -e \".[notebook,dev]\"" >&2
+    exit 1
+fi
+
+staged=()
+while IFS= read -r -d '' file; do
+    staged+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.ipynb')
+
+if [ ${#staged[@]} -eq 0 ]; then
+    exit 0
+fi
+
+"$python" - "${staged[@]}" <<'PY'
+import json
+import subprocess
+import sys
+
+offenders = []
+for path in sys.argv[1:]:
+    blob = subprocess.run(
+        ["git", "show", f":{path}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    if blob.returncode != 0:
+        continue
+    try:
+        notebook = json.loads(blob.stdout)
+    except json.JSONDecodeError as error:
+        offenders.append((path, f"is not valid JSON ({error})"))
+        continue
+    for number, cell in enumerate(notebook.get("cells", [])):
+        if cell.get("cell_type") != "code":
+            continue
+        outputs = cell.get("outputs") or []
+        if outputs:
+            offenders.append((path, f"code cell {number} has {len(outputs)} output(s)"))
+        if cell.get("execution_count") is not None:
+            offenders.append(
+                (path, f"code cell {number} has execution_count "
+                       f"{cell['execution_count']}")
+            )
+
+if not offenders:
+    sys.exit(0)
+
+print("pre-commit: refusing to commit notebook output.", file=sys.stderr)
+print(
+    "These notebooks read regulated voter data (RCW 29A.08.720 / 29A.08.740) "
+    "and this repository is public.",
+    file=sys.stderr,
+)
+for path, why in offenders:
+    print(f"  {path}: {why}", file=sys.stderr)
+print("", file=sys.stderr)
+print("Clear the outputs, then stage and commit again:", file=sys.stderr)
+for path in sorted({path for path, _ in offenders}):
+    print(f"  .venv/bin/nbstripout {path} && git add {path}", file=sys.stderr)
+sys.exit(1)
+PY

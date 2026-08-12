@@ -179,3 +179,35 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# --- Voter data protection (RCW 29A.08.720 / 29A.08.740) ---
+# This repo is public. VRDB extracts and anything derived from them are
+# regulated data and must never be committed. Test fixtures are generated at
+# test time into tmp_path, so nothing here needs an exception.
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.txt
+*.csv
+*.xlsx
+*.xls
+*.zip
+
+# SQLite sidecar files. Any GUI that opens an output database with
+# PRAGMA journal_mode=WAL (TablePlus, DB Browser) writes vrdb_YYYYMMDD.sqlite-wal
+# and -shm next to it, and those hold raw page data from the regulated tables.
+# *.sqlite alone does not match them.
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Development ledger. Untracked here only because of a global gitignore on the
+# author's machine; on any other clone `git add -A` would otherwise sweep it in.
+.superpowers/
