@@ -188,6 +188,13 @@ cython_debug/
 *.sqlite3
 *.db
 *.parquet
+# DuckDB views over the Parquet, and their TablePlus launcher. They hold
+# paths, not voters, but they name the extract files and belong to one machine.
+*.duckdb
+*.duckdb.tmp
+*.duckdb.wal
+Open *.duckdb in TablePlus.app/
+Open *.duckdb in TablePlus.app.tmp.app/
 *.txt
 *.csv
 *.xlsx

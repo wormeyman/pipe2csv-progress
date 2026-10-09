@@ -8,6 +8,7 @@ written from, so a parse bug would have matched itself.
 
 import random
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from vrdb import districts, reader, schema
@@ -179,6 +180,12 @@ def sample_source_rows(path, table: schema.Table, *, count: int = 200,
     return rows
 
 
+def _as_source(value):
+    """A database value in the form the source parser gives it. DuckDB returns
+    dates as date objects; SQLite and reader.coerce give ISO text."""
+    return value.isoformat() if isinstance(value, date) else value
+
+
 def check_sample_against_source(conn, table: schema.Table, path, *, count: int = 200,
                                 encoding: str = "cp1252", seed: int = 0) -> CheckResult:
     key = table.primary_key
@@ -197,12 +204,19 @@ def check_sample_against_source(conn, table: schema.Table, path, *, count: int =
             False,
             f"no rows could be sampled from {Path(path).name}; the check did not run",
         )
+    # One query for the whole sample. Through DuckDB each lookup scans the
+    # Parquet file, so 200 single-row queries would cost 200 scans.
+    keys = [row[key_index] for row in sample]
+    marks = ", ".join("?" * len(keys))
+    by_key = {
+        row[key_index]: tuple(_as_source(v) for v in row)
+        for row in conn.execute(
+            f'SELECT {columns} FROM "{table.name}" WHERE "{key.name}" IN ({marks})', keys
+        ).fetchall()
+    }
     problems = []
     for expected in sample:
-        found = conn.execute(
-            f'SELECT {columns} FROM "{table.name}" WHERE "{key.name}" = ?',
-            (expected[key_index],),
-        ).fetchone()
+        found = by_key.get(expected[key_index])
         if found is None:
             problems.append(f"{key.name}={expected[key_index]} missing from database")
             continue

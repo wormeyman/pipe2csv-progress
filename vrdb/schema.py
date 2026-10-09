@@ -177,3 +177,12 @@ STATUS_CODES = {
         "general election; may vote in primaries only"
     ),
 }
+
+
+# The lookup tables, so a query can read 'King' instead of 'KI'. Both the
+# SQLite database and the DuckDB views file carry them: (name, columns, mapping).
+REF_TABLES = (
+    ("ref_county", ("code", "name"), COUNTY_CODES),
+    ("ref_gender", ("code", "name"), GENDER_CODES),
+    ("ref_status", ("code", "note"), STATUS_CODES),
+)

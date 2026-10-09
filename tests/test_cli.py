@@ -7,6 +7,12 @@ import pytest
 import vrdb_export
 
 
+@pytest.fixture(autouse=True)
+def no_launcher(monkeypatch):
+    """The TablePlus launcher is an osacompile app; tests/test_duckdb_out.py covers it."""
+    monkeypatch.setattr(vrdb_export.duckdb_out, "write_launcher", lambda views: None)
+
+
 def test_end_to_end(tmp_path, extract_dir, capsys):
     out = tmp_path / "out"
     out.mkdir()
@@ -14,7 +20,7 @@ def test_end_to_end(tmp_path, extract_dir, capsys):
     # it joins at 90% by design. Lower the floor so this exercises the
     # all-checks-pass path that the real 99.999% extract takes.
     code = vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--sqlite", "--join-floor", "0.5"]
     )
     assert code == 0
 
@@ -36,7 +42,7 @@ def test_end_to_end(tmp_path, extract_dir, capsys):
 def test_refuses_to_clobber(tmp_path, extract_dir):
     out = tmp_path / "out"
     out.mkdir()
-    (out / "vrdb_20260803.sqlite").write_text("existing")
+    (out / "voters_20260803.parquet").write_text("existing")
     with pytest.raises(SystemExit) as excinfo:
         vrdb_export.main([str(extract_dir), "--out", str(out)])
     assert excinfo.value.code == 2
@@ -45,7 +51,7 @@ def test_refuses_to_clobber(tmp_path, extract_dir):
 def test_force_overwrites(tmp_path, extract_dir):
     out = tmp_path / "out"
     out.mkdir()
-    (out / "vrdb_20260803.sqlite").write_text("existing")
+    (out / "vrdb_20260803.duckdb").write_text("existing")
     assert vrdb_export.main(
         [str(extract_dir), "--out", str(out), "--force", "--join-floor", "0.5"]
     ) == 0
@@ -57,9 +63,9 @@ def test_outputs_default_to_the_source_folder(extract_dir):
     Every other CLI test passes --out, so nothing exercised the default. The
     extract_dir fixture lives under tmp_path, so this writes there.
     """
-    assert vrdb_export.main([str(extract_dir), "--parquet", "--join-floor", "0.5"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--join-floor", "0.5"]) == 0
     for name in (
-        "vrdb_20260803.sqlite",
+        "vrdb_20260803.duckdb",
         "voters_20260803.parquet",
         "voting_history_20260803.parquet",
         "districts_precincts_20260803.parquet",
@@ -68,8 +74,8 @@ def test_outputs_default_to_the_source_folder(extract_dir):
         assert not (Path.cwd() / name).exists(), f"{name} landed in the repo"
 
 
-def test_default_writes_sqlite_only(tmp_path, extract_dir):
-    """Parquet is opt-in. Most runs want the database and nothing else.
+def test_default_writes_parquet_and_views_but_no_database(tmp_path, extract_dir):
+    """Parquet plus DuckDB views is the default. SQLite is about 10 times the size.
 
     The fixture joins at 90% by design, so an all-pass run needs the floor
     lowered. Without asserting the code, this returned 1 unnoticed.
@@ -79,32 +85,43 @@ def test_default_writes_sqlite_only(tmp_path, extract_dir):
     assert vrdb_export.main(
         [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
     ) == 0
-    assert (out / "vrdb_20260803.sqlite").exists()
-    assert not list(out.glob("*.parquet"))
+    assert not (out / "vrdb_20260803.sqlite").exists()
+    assert len(list(out.glob("*.parquet"))) == 3
+    assert (out / "vrdb_20260803.duckdb").exists()
 
 
-def test_parquet_adds_to_the_database_rather_than_replacing_it(tmp_path, extract_dir):
+def test_the_default_run_checks_the_parquet_through_the_views(tmp_path, extract_dir, capsys):
+    """With no database, every check must still run, against the Parquet files."""
     out = tmp_path / "out"
     out.mkdir()
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--join-floor", "0.5"]
+    ) == 0
+    captured = capsys.readouterr().out
+    assert "PASS  voters: row count: source 10 vs database 10" in captured
+    assert "PASS  voters: StateVoterID unique" in captured
+    assert "PASS  voters: sample matches source: compared 10 rows" in captured
+    assert "PASS  districts join coverage" in captured
+    assert "parquet matches sqlite" not in captured
+    assert "ALL CHECKS PASSED" in captured
+
+
+def test_sqlite_adds_the_database_beside_the_parquet(tmp_path, extract_dir):
+    out = tmp_path / "out"
+    out.mkdir()
+    assert vrdb_export.main(
+        [str(extract_dir), "--out", str(out), "--sqlite", "--join-floor", "0.5"]
     ) == 0
     assert (out / "vrdb_20260803.sqlite").exists()
     assert len(list(out.glob("*.parquet"))) == 3
+    assert (out / "vrdb_20260803.duckdb").exists()
 
 
-def test_parquet_only_skips_the_database(tmp_path, extract_dir):
-    out = tmp_path / "out"
-    out.mkdir()
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet-only"]) == 0
-    assert not (out / "vrdb_20260803.sqlite").exists()
-    assert (out / "voters_20260803.parquet").exists()
-
-
-def test_the_sqlite_flag_is_gone(tmp_path, extract_dir):
-    """It would now mean the same as passing nothing, so it is not accepted."""
+@pytest.mark.parametrize("flag", ["--parquet", "--parquet-only", "--duckdb"])
+def test_flags_that_now_mean_the_default_are_gone(tmp_path, extract_dir, flag):
+    """They would now mean the same as passing nothing, so they are not accepted."""
     with pytest.raises(SystemExit) as excinfo:
-        vrdb_export.main([str(extract_dir), "--out", str(tmp_path), "--sqlite"])
+        vrdb_export.main([str(extract_dir), "--out", str(tmp_path), flag])
     assert excinfo.value.code == 2
 
 
@@ -113,7 +130,7 @@ def test_sqlite_and_parquet_hold_the_same_rows(tmp_path, extract_dir):
     out = tmp_path / "out"
     out.mkdir()
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--sqlite", "--join-floor", "0.5"]
     ) == 0
     conn = sqlite3.connect(out / "vrdb_20260803.sqlite")
 
@@ -140,25 +157,15 @@ def test_sqlite_and_parquet_hold_the_same_rows(tmp_path, extract_dir):
 
 
 def test_parquet_row_count_is_verified_against_sqlite(tmp_path, extract_dir, capsys):
-    """Nothing else looks at the Parquet output in any mode."""
+    """With --sqlite, the two outputs of one read pass must agree."""
     out = tmp_path / "out"
     out.mkdir()
     assert vrdb_export.main(
-        [str(extract_dir), "--out", str(out), "--parquet", "--join-floor", "0.5"]
+        [str(extract_dir), "--out", str(out), "--sqlite", "--join-floor", "0.5"]
     ) == 0
     captured = capsys.readouterr().out
     assert "PASS  voters: parquet matches sqlite: sqlite 10 vs parquet 10" in captured
     assert "PASS  voting_history: parquet matches sqlite" in captured
-
-
-def test_parquet_only_reports_that_no_checks_ran(tmp_path, extract_dir, capsys):
-    """Verification needs the database, so --parquet alone runs zero checks."""
-    out = tmp_path / "out"
-    out.mkdir()
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet-only"]) == 0
-    captured = capsys.readouterr().out
-    assert "NO CHECKS RUN" in captured
-    assert "ALL CHECKS PASSED" not in captured
 
 
 def test_skip_verify_reports_that_no_checks_ran(tmp_path, extract_dir, capsys):
@@ -353,7 +360,7 @@ def test_leaves_alone_outputs_for_tables_it_is_not_writing(tmp_path, extract_dir
     stale.write_bytes(b"from an earlier complete run")
     (extract_dir / "2026-08-03_Districts-Precincts.xlsx").unlink()
 
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--parquet"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--out", str(out)]) == 0
     assert stale.read_bytes() == b"from an earlier complete run"
 
 
@@ -364,7 +371,7 @@ def test_force_does_not_delete_an_untouched_table_output(tmp_path, extract_dir):
     stale.write_bytes(b"from an earlier complete run")
     (extract_dir / "2026-08-03_Districts-Precincts.xlsx").unlink()
 
-    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--force", "--parquet"]) == 0
+    assert vrdb_export.main([str(extract_dir), "--out", str(out), "--force"]) == 0
     assert stale.read_bytes() == b"from an earlier complete run"
 
 
@@ -377,5 +384,21 @@ def test_partial_output_is_removed_on_failure(tmp_path, extract_dir, monkeypatch
 
     monkeypatch.setattr(vrdb_export.sqlite_out, "create_indexes", explode)
     with pytest.raises(RuntimeError):
-        vrdb_export.main([str(extract_dir), "--out", str(out)])
+        vrdb_export.main([str(extract_dir), "--out", str(out), "--sqlite"])
     assert not (out / "vrdb_20260803.sqlite").exists()
+    assert not list(out.glob("*.parquet"))
+
+
+def test_a_failed_check_run_deletes_the_parquet_and_views(tmp_path, extract_dir, monkeypatch):
+    """The default path has no database, so it fails somewhere else."""
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(vrdb_export.verify, "check_districts_join", explode)
+    with pytest.raises(RuntimeError):
+        vrdb_export.main([str(extract_dir), "--out", str(out)])
+    assert not list(out.glob("*.parquet"))
+    assert not (out / "vrdb_20260803.duckdb").exists()

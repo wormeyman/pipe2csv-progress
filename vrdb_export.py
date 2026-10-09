@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Load a Washington VRDB extract into SQLite, and optionally Parquet.
+"""Load a Washington VRDB extract into Parquet, with DuckDB views for browsing.
 
-    python vrdb_export.py /path/to/08.2026.WA
+    python vrdb_export.py /path/to/10.2026.WA
 
-Run with no arguments to be prompted for the folder. The database alone is the
-default; pass --parquet to write the Parquet files beside it.
+Run with no arguments to be prompted for the folder. By default it writes one
+Parquet file per table, a vrdb_YYYYMMDD.duckdb file of views over them, and a
+launcher app that opens those views in TablePlus. Every check runs through the
+views. Pass --sqlite to also build the SQLite database, about 10 times the size.
 
 The outputs contain regulated voter data (RCW 29A.08.720 and 29A.08.740). They
 default to the source folder and must never be committed to version control.
@@ -15,7 +17,11 @@ import sys
 import time
 from pathlib import Path
 
-from vrdb import discover, districts, parquet_out, progress, reader, schema, sqlite_out, verify
+import duckdb
+
+from vrdb import (
+    discover, districts, duckdb_out, parquet_out, progress, reader, schema, sqlite_out, verify,
+)
 
 _DESCRIPTION = (
     __doc__ or "Load a Washington VRDB extract into SQLite and Parquet."
@@ -27,16 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("folder", nargs="?", help="Folder holding the extract files")
     parser.add_argument("--out", help="Output directory (default: the source folder)")
     parser.add_argument(
-        "--parquet",
-        action="store_true",
-        help="Also write Parquet files beside the database",
-    )
-    parser.add_argument(
-        "--parquet-only",
+        "--sqlite",
         action="store_true",
         help=(
-            "Write Parquet without the database. Verification needs the "
-            "database, so this mode runs no checks at all."
+            "Also build the SQLite database, from the same read pass. It is about "
+            "10 times the size of the Parquet files."
         ),
     )
     parser.add_argument("--force", action="store_true", help="Overwrite existing outputs")
@@ -58,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def output_paths(out_dir: Path, extract_date: str, tables, *, sqlite: bool,
-                 parquet: bool) -> dict[str, Path]:
+def output_paths(out_dir: Path, extract_date: str, tables, *,
+                 sqlite: bool) -> dict[str, Path]:
     """Output paths for the tables this run will actually write.
 
     Scoped to `tables`, not schema.ALL_TABLES. Naming a Parquet file for a
@@ -70,9 +71,9 @@ def output_paths(out_dir: Path, extract_date: str, tables, *, sqlite: bool,
     paths = {}
     if sqlite:
         paths["sqlite"] = out_dir / f"vrdb_{extract_date}.sqlite"
-    if parquet:
-        for table in tables:
-            paths[f"parquet:{table.name}"] = out_dir / f"{table.name}_{extract_date}.parquet"
+    for table in tables:
+        paths[f"parquet:{table.name}"] = out_dir / f"{table.name}_{extract_date}.parquet"
+    paths["duckdb"] = duckdb_out.views_path(out_dir, extract_date)
     return paths
 
 
@@ -110,10 +111,9 @@ def main(argv=None) -> int:
         print(error, file=sys.stderr)
         return 2
 
-    # SQLite is the point of the tool and the only output verification can
-    # check. Parquet is the opt-in extra.
-    want_sqlite = not args.parquet_only
-    want_parquet = args.parquet or args.parquet_only
+    # Parquet is the output; the DuckDB views make it browsable and checkable.
+    # SQLite is the opt-in extra.
+    want_sqlite = args.sqlite
     out_dir = Path(args.out).expanduser() if args.out else found.vrdb.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +137,7 @@ def main(argv=None) -> int:
     # blocks the run nor has its earlier output deleted by --force.
     paths = output_paths(
         out_dir, found.extract_date, [t for t, _ in sources],
-        sqlite=want_sqlite, parquet=want_parquet,
+        sqlite=want_sqlite,
     )
     _check_clobber(paths, args.force)
 
@@ -173,10 +173,9 @@ def main(argv=None) -> int:
             if conn is not None:
                 sqlite_out.create_table(conn, table)
 
-            if want_sqlite and want_parquet:
+            if conn is not None:
                 # One pass feeds both writers: tee the batches so the 773 MB
                 # source file is read once, not twice.
-                assert conn is not None
                 db = conn
                 name = table.name
                 sqlite_rows[name] = 0
@@ -188,17 +187,12 @@ def main(argv=None) -> int:
                         )
                         yield batch
 
-                written[table.name] = parquet_out.write_batches(
-                    paths[f"parquet:{table.name}"], table, tee()
-                )
-            elif want_sqlite:
-                assert conn is not None
-                db = conn
-                written[table.name] = sqlite_out.insert_batches(db, table, make())
+                batches = tee()
             else:
-                written[table.name] = parquet_out.write_batches(
-                    paths[f"parquet:{table.name}"], table, make()
-                )
+                batches = make()
+            written[table.name] = parquet_out.write_batches(
+                paths[f"parquet:{table.name}"], table, batches
+            )
 
             reporter.finish(written[table.name])
             _report(stats, table.name)
@@ -207,9 +201,14 @@ def main(argv=None) -> int:
                 print(f"  creating indexes on {table.name}...")
                 sqlite_out.create_indexes(conn, table)
 
+        # The views are how the Parquet output is browsed, and how it is checked.
+        duckdb_out.write_views(
+            paths["duckdb"], {t.name: paths[f"parquet:{t.name}"] for t, _ in sources}
+        )
         results = []
-        if conn is not None and not args.skip_verify:
+        if not args.skip_verify:
             print("\n--- Verification ---")
+            check = duckdb.connect(str(paths["duckdb"]), read_only=True)
             for table, path in sources:
                 table_stats = all_stats[table.name]
                 # Before the row count, which reports skipped rows as expected
@@ -225,10 +224,10 @@ def main(argv=None) -> int:
                     source_rows = verify.count_source_rows(path, encoding=args.encoding)
                 results.append(
                     verify.check_row_count(
-                        conn, table, source_rows, skipped=table_stats.malformed
+                        check, table, source_rows, skipped=table_stats.malformed
                     )
                 )
-                results.append(verify.check_primary_key_unique(conn, table))
+                results.append(verify.check_primary_key_unique(check, table))
                 if table.name in sqlite_rows:
                     results.append(
                         verify.check_parquet_matches_sqlite(
@@ -238,13 +237,14 @@ def main(argv=None) -> int:
                 if table.primary_key is not None and table is not schema.DISTRICTS_PRECINCTS:
                     results.append(
                         verify.check_sample_against_source(
-                            conn, table, path, encoding=args.encoding
+                            check, table, path, encoding=args.encoding
                         )
                     )
             if found.districts is not None:
                 results.append(
-                    verify.check_districts_join(conn, floor=args.join_floor)
+                    verify.check_districts_join(check, floor=args.join_floor)
                 )
+            check.close()
             for result in results:
                 print(f"  {'PASS' if result.passed else 'FAIL'}  {result.name}: {result.detail}")
     except BaseException as error:
@@ -275,8 +275,7 @@ def main(argv=None) -> int:
     print(f"\n{'=' * 56}")
     failed = [r for r in results if not r.passed]
     if not results:
-        # --skip-verify, or --parquet alone (verification needs the database).
-        # An empty result list is not a clean bill of health.
+        # --skip-verify. An empty result list is not a clean bill of health.
         print("NO CHECKS RUN")
     else:
         print("SOME CHECKS FAILED" if failed else "ALL CHECKS PASSED")
@@ -287,6 +286,8 @@ def main(argv=None) -> int:
             print(f"  {path.name:<22} {path.stat().st_size / 1e6:>9,.1f} MB")
     print(f"  {'elapsed':<22} {elapsed:>11,.1f}s")
     print(f"{'=' * 56}")
+    if not failed and (app := duckdb_out.write_launcher(paths["duckdb"])) is not None:
+        print(f"Double-click to browse in TablePlus: {app}")
     return 1 if failed else 0
 
 

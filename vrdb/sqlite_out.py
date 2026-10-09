@@ -56,14 +56,9 @@ def create_indexes(conn: sqlite3.Connection, table: schema.Table) -> None:
 
 def write_ref_tables(conn: sqlite3.Connection) -> None:
     """Small lookup tables so queries can read 'King' instead of 'KI'."""
-    specs = [
-        ("ref_county", "code TEXT PRIMARY KEY, name TEXT", schema.COUNTY_CODES),
-        ("ref_gender", "code TEXT PRIMARY KEY, name TEXT", schema.GENDER_CODES),
-        ("ref_status", "code TEXT PRIMARY KEY, note TEXT", schema.STATUS_CODES),
-    ]
-    for name, columns, mapping in specs:
+    for name, (key, value), mapping in schema.REF_TABLES:
         conn.execute(f'DROP TABLE IF EXISTS "{name}"')
-        conn.execute(f'CREATE TABLE "{name}" ({columns})')
+        conn.execute(f'CREATE TABLE "{name}" ({key} TEXT PRIMARY KEY, {value} TEXT)')
         conn.executemany(
             f'INSERT INTO "{name}" VALUES (?, ?)', sorted(mapping.items())
         )

@@ -1,5 +1,5 @@
 # pipe2csv-progress
-Two tools for working with Washington voter registry (VRDB) extracts. `to_csv_progress.py` converts a large, pipe-delimited export that uses `<br>` for line breaks into standard RFC 4180 CSV, fast, with accurate progress, ETA, and proper quoting for commas inside fields. `vrdb_export.py` loads a full monthly extract into a typed, indexed SQLite database, and optionally a set of Parquet files - see [below](#vrdb_exportpy---load-an-extract-into-sqlite).
+Two tools for working with Washington voter registry (VRDB) extracts. `to_csv_progress.py` converts a large, pipe-delimited export that uses `<br>` for line breaks into standard RFC 4180 CSV, fast, with accurate progress, ETA, and proper quoting for commas inside fields. `vrdb_export.py` loads a full monthly extract into typed Parquet files with DuckDB views for browsing in TablePlus, and optionally a SQLite database - see [below](#vrdb_exportpy---load-an-extract-into-parquet).
 
 - Streams input in a single pass
 - Handles Windows-1252 (smart quotes) by default
@@ -61,10 +61,11 @@ options:
 
 `tail -1 voters.csv`
 
-## vrdb_export.py - load an extract into SQLite
+## vrdb_export.py - load an extract into Parquet
 
-Builds a typed, indexed SQLite database from a monthly Washington VRDB
-extract, and optionally a set of Parquet files beside it.
+Builds typed Parquet files from a monthly Washington VRDB extract, with a small
+DuckDB file of views over them for browsing in TablePlus. Pass `--sqlite` to
+also build a typed, indexed SQLite database, about 10 times the size.
 
 ### Setup
 
@@ -108,9 +109,11 @@ pattern, or a header whose columns have been renamed or reordered, the run
 stops with a message naming the problem instead of loading a guess.
 
 Outputs are named from the extract date and land in the source folder by
-default. A plain run writes one file, `vrdb_20260803.sqlite`. With `--parquet`
-you also get `voters_20260803.parquet`, `voting_history_20260803.parquet` and
-`districts_precincts_20260803.parquet`.
+default. A plain run writes `voters_20261001.parquet`,
+`voting_history_20261001.parquet` and `districts_precincts_20261001.parquet`,
+the views file `vrdb_20261001.duckdb`, and on a Mac a launcher app to
+double-click (see [Browsing in TablePlus](#browsing-in-tableplus)). With
+`--sqlite` you also get `vrdb_20261001.sqlite`, from the same read pass.
 Re-running is idempotent; it refuses to overwrite an existing output unless
 you pass `--force`, and if a run fails partway it deletes whatever partial
 outputs it had already started writing.
@@ -120,8 +123,7 @@ Options:
 | Option | Effect |
 |---|---|
 | `--out DIR` | Output directory (default: the source folder) |
-| `--parquet` | Also write the Parquet files beside the database |
-| `--parquet-only` | Write Parquet without the database. Verification needs the database, so this mode runs no checks at all. |
+| `--sqlite` | Also build the SQLite database, about 10 times the size of the Parquet files |
 | `--force` | Overwrite existing outputs |
 | `--skip-verify` | Skip the post-load verification pass |
 | `--encoding ENCODING` | Source encoding (default: `cp1252`) |
@@ -135,10 +137,11 @@ Unless you pass `--skip-verify`, the run re-checks its own output and exits 1
 if anything fails. Per table it checks that no row was skipped as malformed,
 that the row count is right, that the primary key is unique, and - for the two
 pipe-delimited tables - that 200 rows re-read at random offsets from the source
-match the database field for field. When `--parquet` is in play it also checks
-that each Parquet file holds as many rows as SQLite, since nothing else looks
-at the Parquet output. It finishes by reporting what share of voters join to a
-district row.
+match the output field for field. Every check reads the Parquet files through
+the DuckDB views, so the default run is fully checked with no database. With
+`--sqlite` it also checks that SQLite holds as many rows as each Parquet file,
+since the two writers share one read pass. It finishes by reporting what share
+of voters join to a district row.
 
 Two of those deserve spelling out, because the obvious implementation of each
 is a check that cannot fail:
@@ -158,9 +161,14 @@ is a check that cannot fail:
 
 ### Performance
 
-Measured on the real 2026-08 extract, on an M-series Mac:
+The default run on the real 2026-10 extract, on an M-series Mac: 39.9
+seconds, every check passed, 5,593,488 voters. Its outputs are the three
+Parquet files (170.1 MB) and the views file (1.8 MB). The same extract with
+`--sqlite` took 86.8 seconds and added a 1,770.1 MB database.
 
-- Full run with `--parquet` (all three files, both output formats): 91 seconds.
+Measured earlier on the real 2026-08 extract, when SQLite was the default:
+
+- Full run writing both SQLite and Parquet for all three files: 91 seconds.
 - Row counts: `voters` 5,573,822; `voting_history` 5,234,497;
   `districts_precincts` 231,537.
 - Output sizes: SQLite 1,959.2 MB; `voters_20260803.parquet` 149.9 MB;
@@ -170,8 +178,8 @@ Measured on the real 2026-08 extract, on an M-series Mac:
 - Verification: 0 malformed rows, 0 coercion warnings, districts join coverage
   99.9986% (5,573,743 of 5,573,822 voters).
 
-Skipping Parquet is worth roughly 11%. The 2026-04 extract, same machine, same
-5.5M voters: 83.2 seconds by default against 93.8 seconds with `--parquet`.
+Back then, skipping Parquet was worth roughly 11%. The 2026-04 extract, same machine, same
+5.5M voters: 83.2 seconds writing SQLite alone against 93.8 seconds writing both.
 Most of that is in the voters pass, which reads at 161k rows/s writing SQLite
 alone and 123k rows/s feeding both writers from the shared read.
 
@@ -185,6 +193,33 @@ parent, so memory grows linearly with row count - tens of MB across the
 workbook's roughly 233,787 row elements. That workbook is small enough (231,537
 data rows) for this not to matter in practice, but it is not the same
 constant-memory design as the text reader.
+
+### Browsing in TablePlus
+
+Parquet is far smaller than the database. On the 2026-10 extract the three
+Parquet files total 170.1 MB against 1,770.1 MB of SQLite. DuckDB browses them
+without a copy, through `vrdb_20261001.duckdb`, which every run writes beside
+them. For a folder exported before views existed:
+
+```bash
+.venv/bin/python -m vrdb.duckdb_out /path/to/10.2026.WA
+```
+
+The views file holds three views, `voters`, `voting_history` and
+`districts_precincts`, plus the lookup tables `ref_county`, `ref_gender` and
+`ref_status`. The views hold no rows: each reads its Parquet file live. The
+file is 1.8 MB, almost all of it DuckDB's fixed storage for the three small
+tables. The views are named by table, not by date, so a saved TablePlus filter
+still works on next month's extract.
+
+TablePlus 27 has DuckDB 1.5.6 built in, and `pyproject.toml` pins the same
+version. TablePlus does not open `.duckdb` files on a double-click (Tad
+does), so the run also writes `Open vrdb_20261001.duckdb in TablePlus.app`.
+Double-click that. It runs `open -a TablePlus` on a `duckdb://` connection
+link, since no app claims that link scheme by itself.
+
+The views file and the launcher hold file paths, not voters, but both are
+gitignored with the rest of the outputs.
 
 ### Tables
 
@@ -244,6 +279,9 @@ they default to the source data folder and must never be committed.
   database with `PRAGMA journal_mode=WAL` (TablePlus, DB Browser) writes
   `vrdb_20260803.sqlite-wal` and `-shm` beside it, holding raw page data from
   the regulated tables. `*.sqlite` does not match those names.
+- DuckDB views and their launcher: `*.duckdb`, `*.duckdb.tmp`, `*.duckdb.wal`
+  and `Open *.duckdb in TablePlus.app/`. They hold file paths and the lookup
+  tables, not voters, but they name the extract files.
 - `.superpowers/`, the development ledger
 
 `.gitignore` cannot protect the notebook, because `notebooks/vrdb_explore.ipynb`
